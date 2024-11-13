@@ -20,7 +20,7 @@
 #include <cstring> 
 #include <exception>
 #include <atomic>
-#include <iomanip> // For setting precision in timing output
+#include <iomanip>
 
 #define UNUSED(p)  ((void)(p))
 
@@ -453,7 +453,7 @@ private:
     std::vector<PageID> lru;
     std::map<PageID, FrameID> pageMap;
     const uint64_t MAXINT = 0xFFFFFFFFFFFFFFFF;
-    
+
 public:
     uint64_t capacity_;
     uint64_t page_size_;
