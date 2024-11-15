@@ -935,8 +935,8 @@ int main(int argc, char* argv[]) {
             for (size_t i = 0; i < 4; ++i) {
                 threads.emplace_back([i, &db, &num_unfixes] {
                     std::mt19937_64 engine{i};
-                    std::uniform_int_distribution<uint64_t> distr(0, 400);
-                    for (size_t j = 0; j < 10000; ++j) {
+                    std::uniform_int_distribution<uint64_t> distr(0, 100);
+                    for (size_t j = 0; j < 100000; ++j) {
                         PageID next_page = distr(engine);
                         auto& page = db.buffer_manager.fix_page(next_page, false);
                         db.buffer_manager.unfix_page(page, false);

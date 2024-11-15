@@ -25,19 +25,27 @@
 
 class FunctionProfiler {
 private:
-    static inline std::mutex file_mutex;  // Changed to inline
+    static inline std::mutex file_mutex;  
     std::string csv_file;
     std::chrono::high_resolution_clock::time_point start_time;
     std::vector<std::string> additional_data;
     bool header_written = false;
+    
+    // New members for subtiming
+    struct SubTiming {
+        std::string label;
+        std::chrono::high_resolution_clock::time_point start;
+        double duration_ms = 0.0;
+    };
+    std::vector<SubTiming> subtimings;
+    std::optional<SubTiming> current_subtiming;
 
     void writeHeader() {
         std::ofstream file(csv_file, std::ios::app);
         if (!header_written && file.tellp() == 0) {
             file << "timestamp,duration_ms,function_name,page_num,exclusive,pool_size,fifo_size,lru_size";
-            // for (size_t i = 0; i < additional_data.size(); i++) {
-            //     file << ",data" << i;
-            // }
+            // Add headers for subtimings
+            file << ",locking,queues,eviction,add_page";
             file << "\n";
             header_written = true;
         }
@@ -54,7 +62,38 @@ public:
         additional_data.push_back(data);
     }
 
+    // Start timing a subsection
+    void startSubtiming(const std::string& label) {
+        // If there's already a subtiming in progress, finish it first
+        if (current_subtiming) {
+            endSubtiming();
+        }
+        
+        current_subtiming = SubTiming{
+            label,
+            std::chrono::high_resolution_clock::now(),
+            0.0
+        };
+    }
+
+    // End timing the current subsection
+    void endSubtiming() {
+        if (current_subtiming) {
+            auto end_time = std::chrono::high_resolution_clock::now();
+            auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
+                end_time - current_subtiming->start);
+            current_subtiming->duration_ms = duration.count() / 1000.0;
+            subtimings.push_back(*current_subtiming);
+            current_subtiming.reset();
+        }
+    }
+
     ~FunctionProfiler() {
+        // Make sure to end any ongoing subtiming
+        if (current_subtiming) {
+            endSubtiming();
+        }
+
         auto end_time = std::chrono::high_resolution_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
         double duration_ms = duration.count() / 1000.0;
@@ -73,6 +112,26 @@ public:
         for (const auto& data : additional_data) {
             file << "," << data;
         }
+
+        for(const auto& data : subtimings) {
+            file << "," << data.duration_ms;
+        }
+
+        // // Add subtiming data to the CSV
+        // std::map<std::string, double> timing_map; // Use map to organize timings by label
+        // for (const auto& timing : subtimings) {
+        //     timing_map[timing.label] = timing.duration_ms;
+        // }
+
+        // // Write subtiming data in fixed order
+        // const std::vector<std::string> expected_timings = {
+        //     "lookup_time", "io_time", "queue_time", "lock_time"
+        // };
+        
+        // for (const auto& label : expected_timings) {
+        //     file << "," << (timing_map.count(label) ? timing_map[label] : 0.0);
+        // }
+
         file << "\n";
     }
 };
@@ -564,7 +623,8 @@ public:
 
         // TODO: Implement logic to load the page if it's not already in memory.
         // HINT: Handle eviction if the buffer is full and synchronize access for thread safety.
-    
+
+        profiler.startSubtiming("locking");
         std::lock_guard<std::mutex> l(mutex);
 
         // see if we have to start locking
@@ -575,9 +635,11 @@ public:
             buffer_pool[f]->exclusive = exclusive;
             buffer_pool[f]->users++;
         }
+        profiler.endSubtiming();
         
         // if in fifo, move to lru
         // if in lru, put at end
+        profiler.startSubtiming("queues");
         auto location = std::find(fifo.begin(), fifo.end(), page_id);
         auto location2 = std::find(lru.begin(), lru.end(), page_id);
         if (location != fifo.end()) {
@@ -585,14 +647,16 @@ public:
             lru.push_back(page_id);
             return *buffer_pool[pageMap[page_id]];
         }
-
         else if (location2 != lru.end()) {
             lru.erase(location2);
             lru.push_back(page_id);
             return *buffer_pool[pageMap[page_id]];
         }
+        profiler.endSubtiming();
+
 
         // are we at capacity, need to evict??
+        profiler.startSubtiming("eviction");
         if (capacity_ == fifo.size() + lru.size()) {
             PageID evicted = MAXINT;
             for(uint64_t i = 0; i < fifo.size(); i++) {
@@ -617,8 +681,10 @@ public:
             pageMap.erase(evicted);
             buffer_pool[f]->shared_lock.unlock();
         }
+        profiler.endSubtiming();
 
         // add in new page
+        profiler.startSubtiming("addPage");
         fifo.push_back(page_id);
         for(uint64_t i = 0; i < buffer_pool.size(); i++) {
             if (buffer_pool[i]->valid) continue;
@@ -635,6 +701,7 @@ public:
             pageMap[page_id] = i;
             return *buffer_pool[i];
         }
+        profiler.endSubtiming();
         throw buffer_full_error{};
         
         UNUSED(page_id); UNUSED(exclusive);
@@ -1002,8 +1069,8 @@ int main(int argc, char* argv[]) {
             for (size_t i = 0; i < 4; ++i) {
                 threads.emplace_back([i, &db, &num_unfixes] {
                     std::mt19937_64 engine{i};
-                    std::uniform_int_distribution<uint64_t> distr(0, 400);
-                    for (size_t j = 0; j < 10000; ++j) {
+                    std::uniform_int_distribution<uint64_t> distr(0, 100);
+                    for (size_t j = 0; j < 100000; ++j) {
                         PageID next_page = distr(engine);
                         auto& page = db.buffer_manager.fix_page(next_page, false);
                         db.buffer_manager.unfix_page(page, false);
@@ -1014,7 +1081,7 @@ int main(int argc, char* argv[]) {
             for (auto& thread : threads) {
                 thread.join();
             }
-            assert(num_unfixes.load() == 40000);
+            assert(num_unfixes.load() == 400000);
 
             std::cout<<"Passed: Test 10"<<std::endl;
         }
