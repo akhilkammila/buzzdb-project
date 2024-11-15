@@ -490,7 +490,6 @@ public:
         users = 0;
         page_id = 0;
     }
-
 };
 
 class buffer_full_error : public std::exception {
@@ -559,9 +558,9 @@ public:
         profiler.addData(exclusive ? "exclusive" : "shared");  // Access type
 
         // Log buffer pool state
-        profiler.addData("pool_size=" + std::to_string(buffer_pool.size()));
-        profiler.addData("fifo_size=" + std::to_string(fifo.size()));
-        profiler.addData("lru_size=" + std::to_string(lru.size()));
+        profiler.addData(std::to_string(buffer_pool.size()));
+        profiler.addData(std::to_string(fifo.size()));
+        profiler.addData(std::to_string(lru.size()));
 
         // TODO: Implement logic to load the page if it's not already in memory.
         // HINT: Handle eviction if the buffer is full and synchronize access for thread safety.
